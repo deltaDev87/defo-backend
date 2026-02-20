@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"], 
+    allow_origins=["https://deforestation-detector-app.vercel.app"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -40,4 +40,5 @@ def read_root():
         <h1>🚀 Backend Running at http://127.0.0.1:8000/</h1>
     </body>
     </html>
+
     """
