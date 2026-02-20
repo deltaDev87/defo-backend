@@ -1,0 +1,19 @@
+{
+  "input_folder": "input_folder",
+  "output_folder": "output_folder",
+
+  "start_folder": "input_1",
+  "end_folder": "input_2",
+
+  "center_lat": -10.435,
+  "center_lon": -62.465,
+  "box_size_km": 10,
+  "date_1": "2001-12",
+  "date_2": "2023-12",
+
+  "L": 0.5,
+  "ndvi_threshold": 0.2,
+  "savi_threshold": 0.15,
+  "deforestation_alert_threshold": 5,
+  "cloud_shadow_threshold": 1000
+}
