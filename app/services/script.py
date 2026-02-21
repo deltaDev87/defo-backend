@@ -23,6 +23,7 @@ NDVI_THRESHOLD = config["ndvi_threshold"]
 SAVI_THRESHOLD = config["savi_threshold"]
 DEFORESTATION_ALERT_THRESHOLD = config["deforestation_alert_threshold"]
 CLOUD_SHADOW_THRESHOLD = config["cloud_shadow_threshold"]
+EVI_THRESHOLD = config["evi_threshold"]
 
 start_folder = Path(config["start_folder"])
 end_folder = Path(config["end_folder"])
@@ -32,6 +33,8 @@ output_folder = Path(config["output_folder"])
 META_NODATA = -9999.0
 
 
+
+# removes cloud masking based on brightness
 def apply_cloud_shadow_mask(red, nir):
     brightness = (red + nir) / 2
     mask = brightness < CLOUD_SHADOW_THRESHOLD
@@ -39,7 +42,7 @@ def apply_cloud_shadow_mask(red, nir):
     nir = np.where(mask, np.nan, nir)
     return red, nir
 
-
+#removes dark objects from pictures
 def dark_object_subtraction(band):
     dark_value = np.nanpercentile(band, 1)
     corrected = band - dark_value
@@ -47,31 +50,43 @@ def dark_object_subtraction(band):
     return corrected
 
 
-def save_as_png(data, output_png_path):
-    clipped = np.clip(data, -1, 1)
-    normalized = ((clipped + 1) / 2 * 255)
-    normalized = np.where(np.isfinite(normalized), normalized, 0)
-    normalized = normalized.astype(np.uint8)
-    cv2.imwrite(str(output_png_path), normalized)
-    logging.info(f"Saved PNG: {output_png_path}")
+# png gen to show on ui
+# def save_as_png(data, output_png_path):
+#     clipped = np.clip(data, -1, 1)
+#     normalized = ((clipped + 1) / 2 * 255)
+#     normalized = np.where(np.isfinite(normalized), normalized, 0)
+#     normalized = normalized.astype(np.uint8)
+#     cv2.imwrite(str(output_png_path), normalized)
+#     logging.info(f"Saved PNG: {output_png_path}")
 
 
-def compute_indices(red_path, nir_path, ndvi_out, savi_out, ndvi_png, savi_png):
+
+#ndvi = (nir - red) / (nir + red)
+#savi = ((nir - red) / (nir + red + L)) * (1 + L)
+#evi = 2.5 * ((nir - red) / (nir + 6 * red - 7.5 * blue + 1))
+def compute_indices(blue_path, red_path, nir_path,
+                    ndvi_out, savi_out, evi_out):
+
+    if not blue_path.exists():
+        raise FileNotFoundError(blue_path)
     if not red_path.exists():
         raise FileNotFoundError(red_path)
     if not nir_path.exists():
         raise FileNotFoundError(nir_path)
 
-    with rasterio.open(red_path) as red_src, rasterio.open(nir_path) as nir_src:
+    with rasterio.open(blue_path) as blue_src, \
+         rasterio.open(red_path) as red_src, \
+         rasterio.open(nir_path) as nir_src:
 
+        blue = blue_src.read(1).astype(np.float32)
         red = red_src.read(1).astype(np.float32)
         nir = nir_src.read(1).astype(np.float32)
 
-        if red_src.nodata is not None:
-            red[red == red_src.nodata] = np.nan
-        if nir_src.nodata is not None:
-            nir[nir == nir_src.nodata] = np.nan
+        for band, src in [(blue, blue_src), (red, red_src), (nir, nir_src)]:
+            if src.nodata is not None:
+                band[band == src.nodata] = np.nan
 
+        blue = dark_object_subtraction(blue)
         red = dark_object_subtraction(red)
         nir = dark_object_subtraction(nir)
 
@@ -81,25 +96,25 @@ def compute_indices(red_path, nir_path, ndvi_out, savi_out, ndvi_png, savi_png):
 
         ndvi = (nir - red) / (nir + red)
         savi = ((nir - red) / (nir + red + L)) * (1 + L)
+        evi = 2.5 * ((nir - red) / (nir + 6 * red - 7.5 * blue + 1))
 
         meta = red_src.meta.copy()
         meta.update(dtype=rasterio.float32, count=1, nodata=META_NODATA)
 
-        ndvi_write = np.where(np.isfinite(ndvi), ndvi, META_NODATA)
-        savi_write = np.where(np.isfinite(savi), savi, META_NODATA)
+        def write_index(data, out_path):
+            write_data = np.where(np.isfinite(data), data, META_NODATA)
+            with rasterio.open(out_path, 'w', **meta) as dst:
+                dst.write(write_data.astype(np.float32), 1)
 
-        with rasterio.open(ndvi_out, 'w', **meta) as dst:
-            dst.write(ndvi_write.astype(np.float32), 1)
+        write_index(ndvi, ndvi_out)
+        write_index(savi, savi_out)
+        write_index(evi, evi_out)
 
-        with rasterio.open(savi_out, 'w', **meta) as dst:
-            dst.write(savi_write.astype(np.float32), 1)
-
-        save_as_png(ndvi, ndvi_png)
-        save_as_png(savi, savi_png)
-
-    logging.info(f"Computed NDVI/SAVI for {red_path.name}")
+    logging.info(f"Computed NDVI/SAVI/EVI for {red_path.name}")
 
 
+
+#all three indices are resampled to same grid and then subtracted to get change in indices
 def compare_indices(old_path, new_path, output_path):
 
     with rasterio.open(old_path) as old_src, rasterio.open(new_path) as new_src:
@@ -133,17 +148,27 @@ def compare_indices(old_path, new_path, output_path):
     logging.info(f"Created aligned change raster: {output_path.name}")
 
 
-def detect_deforestation(ndvi_change_path, savi_change_path):
+
+# detects deforestation based on thresholds for all three indices and calculates percentage of deforested pixels
+def detect_deforestation(ndvi_change_path, savi_change_path, evi_change_path):
+
     with rasterio.open(ndvi_change_path) as ndvi_src, \
-         rasterio.open(savi_change_path) as savi_src:
+         rasterio.open(savi_change_path) as savi_src, \
+         rasterio.open(evi_change_path) as evi_src:
 
         ndvi_change = ndvi_src.read(1).astype(np.float32)
         savi_change = savi_src.read(1).astype(np.float32)
+        evi_change = evi_src.read(1).astype(np.float32)
 
-        ndvi_change[ndvi_change == META_NODATA] = np.nan
-        savi_change[savi_change == META_NODATA] = np.nan
+        for arr in [ndvi_change, savi_change, evi_change]:
+            arr[arr == META_NODATA] = np.nan
 
-        valid_mask = np.isfinite(ndvi_change) & np.isfinite(savi_change)
+        valid_mask = (
+            np.isfinite(ndvi_change) &
+            np.isfinite(savi_change) &
+            np.isfinite(evi_change)
+        )
+
         total_pixels = np.sum(valid_mask)
 
         if total_pixels == 0:
@@ -152,13 +177,16 @@ def detect_deforestation(ndvi_change_path, savi_change_path):
                 "status": "No valid pixels found."
             }
 
-        mask = (ndvi_change < -abs(NDVI_THRESHOLD)) & \
-               (savi_change < -abs(SAVI_THRESHOLD))
+        mask = (
+            (ndvi_change < -abs(NDVI_THRESHOLD)) &
+            (savi_change < -abs(SAVI_THRESHOLD)) &
+            (evi_change < -abs(EVI_THRESHOLD))
+        )
 
         deforested_pixels = np.sum(mask & valid_mask)
         percentage = round((deforested_pixels / total_pixels) * 100, 2)
 
-        result = {
+        return {
             "deforestation_percentage": percentage,
             "status": (
                 "Significant deforestation detected!"
@@ -167,10 +195,8 @@ def detect_deforestation(ndvi_change_path, savi_change_path):
             )
         }
 
-        return result
 
-
-#cleans prev output files
+#cleans last downloads
 def clean_previous_outputs(base_path):
     output_root = base_path / output_folder
 
@@ -182,60 +208,60 @@ def clean_previous_outputs(base_path):
 
 
 
-# main fxn
 
+#final pipeline function to run all steps and return result
 def run_pipeline():
 
     base_path = BASE_PATH
-
-    # Clean previous
     clean_previous_outputs(base_path)
 
-    #path for all files
     paths = {
+        "blue_old": base_path / input_folder / start_folder / "band2.TIF",
         "red_old": base_path / input_folder / start_folder / "band4.TIF",
         "nir_old": base_path / input_folder / start_folder / "band5.TIF",
+
+        "blue_new": base_path / input_folder / end_folder / "band2.TIF",
         "red_new": base_path / input_folder / end_folder / "band4.TIF",
         "nir_new": base_path / input_folder / end_folder / "band5.TIF",
 
         "ndvi_old": base_path / output_folder / start_folder / "ndvi.TIF",
         "savi_old": base_path / output_folder / start_folder / "savi.TIF",
+        "evi_old": base_path / output_folder / start_folder / "evi.TIF",
+
         "ndvi_new": base_path / output_folder / end_folder / "ndvi.TIF",
         "savi_new": base_path / output_folder / end_folder / "savi.TIF",
+        "evi_new": base_path / output_folder / end_folder / "evi.TIF",
     }
-
 
     paths["ndvi_old"].parent.mkdir(parents=True, exist_ok=True)
     paths["ndvi_new"].parent.mkdir(parents=True, exist_ok=True)
 
-
     compute_indices(
+        paths["blue_old"],
         paths["red_old"],
         paths["nir_old"],
         paths["ndvi_old"],
         paths["savi_old"],
-        paths["ndvi_old"].with_suffix(".png"),
-        paths["savi_old"].with_suffix(".png"),
+        paths["evi_old"],
     )
 
     compute_indices(
+        paths["blue_new"],
         paths["red_new"],
         paths["nir_new"],
         paths["ndvi_new"],
         paths["savi_new"],
-        paths["ndvi_new"].with_suffix(".png"),
-        paths["savi_new"].with_suffix(".png"),
+        paths["evi_new"],
     )
-
 
     ndvi_change = base_path / output_folder / "ndvi_change.TIF"
     savi_change = base_path / output_folder / "savi_change.TIF"
+    evi_change = base_path / output_folder / "evi_change.TIF"
 
     compare_indices(paths["ndvi_old"], paths["ndvi_new"], ndvi_change)
     compare_indices(paths["savi_old"], paths["savi_new"], savi_change)
+    compare_indices(paths["evi_old"], paths["evi_new"], evi_change)
 
-    result = detect_deforestation(ndvi_change, savi_change)
+    result = detect_deforestation(ndvi_change, savi_change, evi_change)
 
     return result
-
-##script entry point
