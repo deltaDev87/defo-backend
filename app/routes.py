@@ -6,11 +6,13 @@ from app.services.script import run_pipeline
 router = APIRouter()
 
 
+# max box size is 90
 class AnalysisRequest(BaseModel):
     latitude: float
     longitude: float
     start_date: str
     end_date: str
+    box_size_km: float 
 
 
 @router.post("/analysis")
@@ -21,7 +23,8 @@ def run_analysis(data: AnalysisRequest):
             latitude=data.latitude,
             longitude=data.longitude,
             start_date=data.start_date,
-            end_date=data.end_date
+            end_date=data.end_date,
+            box_size_km=data.box_size_km
         )
 
         processing_result = run_pipeline()
