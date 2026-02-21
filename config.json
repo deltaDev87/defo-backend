@@ -15,5 +15,6 @@
   "ndvi_threshold": 0.2,
   "savi_threshold": 0.15,
   "deforestation_alert_threshold": 5,
-  "cloud_shadow_threshold": 1000
+  "cloud_shadow_threshold": 1000,
+  "evi_threshold": 0.10
 }
