@@ -96,14 +96,18 @@ def crop_and_save(url, output_path, bbox):
 def download_bands(item, folder, bbox):
     signed_item = planetary_computer.sign(item)
 
+    blue_url = signed_item.assets["blue"].href
     red_url = signed_item.assets["red"].href
     nir_url = signed_item.assets["nir08"].href
 
+    crop_and_save(blue_url, folder / "band2.TIF", bbox)
     crop_and_save(red_url, folder / "band4.TIF", bbox)
     crop_and_save(nir_url, folder / "band5.TIF", bbox)
 
 
-def download_data(latitude, longitude, start_date, end_date, box_size_km=10):
+def download_data(latitude, longitude, start_date, end_date, box_size_km ):
+    if box_size_km > 90:
+        raise ValueError("Box size must be less than or equal to 90 km.")
 
     delta_lat = box_size_km / 111
     delta_lon = box_size_km / (111 * math.cos(math.radians(latitude)))
